@@ -1,0 +1,50 @@
+{
+  "name": "@nuha/telemetry-sdk",
+  "version": "0.1.0",
+  "description": "Lightweight browser telemetry SDK for Next.js applications",
+  "type": "module",
+  "sideEffects": false,
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm run build"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/aprp19/telemetry-sdk.git",
+    "directory": "packages/telemetry-sdk"
+  },
+  "bugs": {
+    "url": "https://github.com/aprp19/telemetry-sdk/issues"
+  },
+  "homepage": "https://github.com/aprp19/telemetry-sdk#readme",
+  "keywords": [
+    "telemetry",
+    "nextjs",
+    "analytics",
+    "healthcare"
+  ],
+  "license": "MIT",
+  "devDependencies": {
+    "tsup": "^8.4.0",
+    "typescript": "^5.8.3"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

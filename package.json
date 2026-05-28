@@ -1,0 +1,14 @@
+{
+  "name": "telemetry-sdk-monorepo",
+  "private": true,
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build -w @nuha/telemetry-sdk",
+    "typecheck": "npm run typecheck -w @nuha/telemetry-sdk"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

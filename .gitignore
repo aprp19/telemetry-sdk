@@ -1,0 +1,7 @@
+node_modules/
+*.tsbuildinfo
+.DS_Store
+
+# Ignore dist except the published package bundle (for git installs)
+dist/
+!packages/telemetry-sdk/dist/
