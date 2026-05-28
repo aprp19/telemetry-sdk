@@ -1,33 +1,67 @@
 # @nuha/telemetry-sdk
 
-Lightweight, browser-only telemetry SDK for **Next.js** applications. Collects route views and custom events, batches them in memory, and delivers them asynchronously with retry — without blocking the UI.
+Lightweight, browser-only telemetry SDK for **Next.js** applications. Tracks page routes, optional API calls, and custom events — batches them in memory and sends asynchronously with retry, without blocking the UI.
 
-> **Phase 1 (current):** SDK only. No gateway backend, Redpanda, ClickHouse, or consumers are included in this repo yet.
+**Repository:** [github.com/aprp19/telemetry-sdk](https://github.com/aprp19/telemetry-sdk)
+
+> **Phase 1:** Client SDK only. Gateway backend, Redpanda, ClickHouse, and consumers are not in this repo yet.
+
+---
+
+## Table of contents
+
+- [Features](#features)
+- [Installation](#installation)
+- [Quick start](#quick-start)
+- [What gets tracked](#what-gets-tracked)
+- [Configuration](#configuration)
+- [API reference](#api-reference)
+- [Event types](#event-types)
+- [Event schema](#event-schema)
+- [How it works](#how-it-works)
+- [Security](#security)
+- [Environment variables](#environment-variables-nextjs)
+- [Development](#development)
+- [Releasing](#releasing)
+- [License](#license)
 
 ---
 
 ## Features
 
-- **Route tracking** — App Router–friendly navigation events with referrer and duplicate suppression
-- **API tracking** — Optional `fetch` instrumentation; records path + method only (no bodies), GET excluded by default
-- **Event batching** — In-memory queue with interval and size-based flush
-- **Retry** — Failed batches persisted to `localStorage` with exponential backoff
-- **Session management** — Stable `sessionId` via `sessionStorage` + `crypto.randomUUID()`
-- **Fire-and-forget transport** — `navigator.sendBeacon` with `fetch` + `keepalive` fallback
-- **Payload sanitization** — Blocks credentials, tokens, cookies, and PHI-like fields
-- **Tree-shakeable ESM** — Zero runtime dependencies, strict TypeScript
+| Feature | Description |
+|---------|-------------|
+| **Route tracking** | `route_view` events with pathname + referrer; duplicate suppression |
+| **API tracking** | Optional global `fetch` patch; path + HTTP method only (no bodies) |
+| **Custom events** | `telemetry.track()` with auto-enrichment and sanitization |
+| **Batching** | In-memory queue; flush on interval, size, or page unload |
+| **Retry** | Failed batches in `localStorage` with exponential backoff |
+| **Sessions** | Stable `sessionId` via `sessionStorage` + `crypto.randomUUID()` |
+| **Transport** | `sendBeacon` → `fetch` + `keepalive`; optional gzip on fetch |
+| **Healthcare-safe** | Payload sanitization strips credentials and PHI-like keys |
+
+- ESM bundle (~24 KB), zero runtime dependencies, `sideEffects: false`
+- Pre-built `dist/` committed for installs from GitHub
 
 ---
 
 ## Installation
 
-### From GitHub (recommended)
+### From GitHub
 
 ```bash
 npm install github:aprp19/telemetry-sdk#main:packages/telemetry-sdk
 ```
 
-Or in `package.json`:
+```bash
+pnpm add github:aprp19/telemetry-sdk#main:packages/telemetry-sdk
+```
+
+```bash
+yarn add github:aprp19/telemetry-sdk#main:packages/telemetry-sdk
+```
+
+**`package.json`:**
 
 ```json
 {
@@ -37,12 +71,14 @@ Or in `package.json`:
 }
 ```
 
-The repo ships a pre-built `dist/` bundle so your app does not need to compile the SDK.
+> Use the `:packages/telemetry-sdk` suffix — the publishable package lives in that folder, not the repo root.
 
-### Local path (development)
+No build step is required in your app; the repo includes a pre-built `dist/`.
+
+### Local development
 
 ```bash
-npm install ../telemetry-sdk/packages/telemetry-sdk
+npm install ./path/to/telemetry-sdk/packages/telemetry-sdk
 ```
 
 ```json
@@ -53,58 +89,52 @@ npm install ../telemetry-sdk/packages/telemetry-sdk
 }
 ```
 
-### Build from source (this repo)
-
-```bash
-npm install
-npm run build
-```
-
 ---
 
 ## Quick start
 
-### 1. Initialize once (client-side)
-
-```ts
-import { telemetry } from "@nuha/telemetry-sdk";
-
-telemetry.init({
-  endpoint: "https://telemetry-gateway.nuha.care",
-  ppkCode: "1001003",
-  apps: "SIMRS",
-  apiKey: process.env.NEXT_PUBLIC_TELEMETRY_API_KEY,
-  tenantId: process.env.NEXT_PUBLIC_TENANT_ID,
-  hospitalId: process.env.NEXT_PUBLIC_HOSPITAL_ID,
-  flushInterval: 5000,
-  maxQueueSize: 20,
-  trackApi: true,
-  apiTrackExcludeGet: true,
-});
-```
-
-### 2. Track custom events
-
-```ts
-telemetry.track({
-  eventType: "button_click",
-  payload: { button: "save_patient" },
-});
-```
-
-`track()` only enqueues — it never awaits the network.
-
-### 3. Track routes (Next.js App Router)
+### 1. Create a client provider
 
 ```tsx
+// app/providers/TelemetryProvider.tsx
 "use client";
 
 import { useEffect } from "react";
 import { usePathname } from "next/navigation";
 import { telemetry } from "@nuha/telemetry-sdk";
 
-export function TelemetryProvider({ children }: { children: React.ReactNode }) {
+let initialized = false;
+
+function initTelemetry(): void {
+  if (initialized) return;
+  initialized = true;
+
+  telemetry.init({
+    endpoint:
+      process.env.NEXT_PUBLIC_TELEMETRY_ENDPOINT ??
+      "https://telemetry-gateway.nuha.care",
+    ppkCode: process.env.NEXT_PUBLIC_PPK_CODE ?? "1001003",
+    apps: process.env.NEXT_PUBLIC_TELEMETRY_APPS ?? "SIMRS",
+    apiKey: process.env.NEXT_PUBLIC_TELEMETRY_API_KEY,
+    tenantId: process.env.NEXT_PUBLIC_TENANT_ID,
+    hospitalId: process.env.NEXT_PUBLIC_HOSPITAL_ID,
+    flushInterval: 5000,
+    maxQueueSize: 20,
+    trackApi: true,
+    apiTrackExcludeGet: true,
+  });
+}
+
+export function TelemetryProvider({
+  children,
+}: {
+  children: React.ReactNode;
+}) {
   const pathname = usePathname();
+
+  useEffect(() => {
+    initTelemetry();
+  }, []);
 
   useEffect(() => {
     if (pathname) telemetry.trackRoute({ pathname });
@@ -114,63 +144,99 @@ export function TelemetryProvider({ children }: { children: React.ReactNode }) {
 }
 ```
 
-Wrap your root layout with `TelemetryProvider`. A full example lives in [`examples/nextjs-app-router/`](examples/nextjs-app-router/).
+### 2. Wrap your root layout
 
-### 4. Track API calls (optional)
+```tsx
+// app/layout.tsx
+import { TelemetryProvider } from "./providers/TelemetryProvider";
 
-Enable automatic `fetch` tracking in `init()`:
+export default function RootLayout({
+  children,
+}: {
+  children: React.ReactNode;
+}) {
+  return (
+    <html lang="en">
+      <body>
+        <TelemetryProvider>{children}</TelemetryProvider>
+      </body>
+    </html>
+  );
+}
+```
+
+See also: [`examples/nextjs-app-router/`](examples/nextjs-app-router/).
+
+### 3. Track UI actions
 
 ```ts
-telemetry.init({
-  // ...
-  trackApi: true,
-  apiTrackExcludeGet: true, // default: skip GET
+telemetry.track({
+  eventType: "button_click",
+  payload: { button: "save_patient" },
 });
 ```
 
-Each call emits `eventType: "api_call"` with payload `{ apiEndpoint: "/api/patients", method: "POST" }` — no request/response body.
+`track()` only enqueues — it never blocks on the network.
 
-Manual tracking (e.g. for `axios`):
+### 4. Manual API tracking (axios, etc.)
+
+When `trackApi: true` is set in `init()`:
 
 ```ts
 telemetry.trackApi({ apiEndpoint: "/api/patients", method: "POST" });
 ```
 
-Telemetry ingest requests to your configured `endpoint` are never recorded.
+With `trackApi: true`, `fetch` is also patched automatically.
 
-### 5. Manual flush (optional)
+### 5. Flush manually (optional)
 
 ```ts
 await telemetry.flush();
 ```
 
-The queue is cleared only after a successful send. Failed batches are stored for automatic retry.
+The in-memory queue is cleared only after a successful send. Failures are retried from `localStorage`.
+
+---
+
+## What gets tracked
+
+| Kind | `eventType` | Recorded fields | Not recorded |
+|------|-------------|-----------------|--------------|
+| Page route | `route_view` | `pathname`, `referrer` | Query string, hash |
+| API call | `api_call` | `payload.apiEndpoint`, `payload.method` | Request/response body, query string |
+| Custom | *(your value)* | `payload` (sanitized) | Blocked sensitive keys |
+
+**`endpoint` in `init()`** is the telemetry **ingest URL** (where events are sent). It is not logged as an event field.
+
+**`apiTrackExcludeGet: true` (default)** skips `GET` requests. Set to `false` to include them.
+
+Requests to your configured ingest `endpoint` are never tracked (avoids feedback loops).
 
 ---
 
 ## Configuration
 
 | Option | Required | Default | Description |
-|--------|----------|---------|-------------|
-| `endpoint` | Yes | — | HTTPS ingestion URL |
-| `ppkCode` | Yes | — | Provider / facility code |
-| `apps` | Yes | — | Application name (e.g. `SIMRS`) |
-| `apiKey` | No | — | Sent as `Authorization: Bearer …` |
-| `flushInterval` | No | `5000` | Auto-flush interval (ms), 1000–60000 |
-| `maxQueueSize` | No | `20` | Flush when queue reaches this size |
-| `maxRetryAttempts` | No | `5` | Max retries per failed batch |
-| `retryBaseDelayMs` | No | `1000` | Base delay for exponential backoff |
-| `version` | No | `1` | Event schema version |
-| `tenantId` | No | — | Attached to every event |
-| `hospitalId` | No | — | Attached to every event |
-| `userId` | No | — | Default user id for events |
-| `routeDebounceMs` | No | `300` | Suppress duplicate route events within this window |
-| `trackApi` | No | `false` | Patch `fetch` and emit `api_call` events |
-| `apiTrackExcludeGet` | No | `true` | Do not record `GET` API calls |
-| `apiDebounceMs` | No | `300` | Suppress duplicate `api_call` events within this window |
+|--------|:--------:|---------|-------------|
+| `endpoint` | ✓ | — | Ingestion URL (`https://…`) |
+| `ppkCode` | ✓ | — | Provider / facility code |
+| `apps` | ✓ | — | Application id (e.g. `SIMRS`) |
+| `apiKey` | | — | `Authorization: Bearer …` |
+| `flushInterval` | | `5000` | Auto-flush interval (ms) |
+| `maxQueueSize` | | `20` | Flush when queue reaches this size |
+| `maxRetryAttempts` | | `5` | Max retries per failed batch |
+| `retryBaseDelayMs` | | `1000` | Exponential backoff base (ms) |
+| `version` | | `1` | Event schema version |
+| `tenantId` | | — | On every event |
+| `hospitalId` | | — | On every event |
+| `userId` | | — | Default user id |
+| `routeDebounceMs` | | `300` | Dedupe window for `route_view` |
+| `trackApi` | | `false` | Patch `fetch` for `api_call` events |
+| `apiTrackExcludeGet` | | `true` | Skip `GET` API calls |
+| `apiDebounceMs` | | `300` | Dedupe window for `api_call` |
 
 ```ts
-telemetry.setUserId("user-42"); // update after login
+telemetry.setUserId("user-42"); // after login
 ```
 
 ---
@@ -179,24 +245,57 @@ telemetry.setUserId("user-42"); // update after login
 
 | Method | Description |
 |--------|-------------|
-| `telemetry.init(config)` | Initialize the singleton SDK (call once on the client) |
-| `telemetry.track(input)` | Enqueue a custom event (auto-enriched, sanitized) |
-| `telemetry.trackRoute({ pathname, referrer? })` | Enqueue a `route_view` event (deduplicated) |
-| `telemetry.trackApi({ apiEndpoint, method? })` | Enqueue an `api_call` event (requires `trackApi: true`) |
-| `telemetry.flush()` | `Promise<boolean>` — send current queue now |
-| `telemetry.setUserId(id)` | Set default `userId` on subsequent events |
+| `telemetry.init(config)` | Initialize singleton (client-only, once) |
+| `telemetry.track(input)` | Enqueue custom event |
+| `telemetry.trackRoute({ pathname, referrer? })` | Enqueue `route_view` |
+| `telemetry.trackApi({ apiEndpoint, method? })` | Enqueue `api_call` (needs `trackApi: true`) |
+| `telemetry.flush()` | `Promise<boolean>` — send queue now |
+| `telemetry.setUserId(id)` | Default `userId` for later events |
 | `telemetry.getSessionId()` | Current session id |
-| `telemetry.getPendingEventCount()` | Events waiting in memory |
-| `telemetry.isInitialized()` | Whether `init()` has been called |
-| `telemetry.destroy()` | Stop timers and clear SDK state |
+| `telemetry.getPendingEventCount()` | In-memory queue size |
+| `telemetry.isInitialized()` | `init()` was called |
+| `telemetry.destroy()` | Stop timers, uninstall fetch patch |
 
-Named exports are also available for advanced use: `TelemetrySDK`, `QueueManager`, `SessionManager`, `RetryManager`, `RouteTracker`, `BeaconTransport`, `sanitizePayload`.
+**Advanced exports:** `TelemetrySDK`, `QueueManager`, `SessionManager`, `RetryManager`, `RouteTracker`, `ApiTracker`, `BeaconTransport`, `sanitizePayload`, types.
+
+---
+
+## Event types
+
+### `route_view`
+
+```json
+{
+  "eventType": "route_view",
+  "pathname": "/emr/patient/123",
+  "referrer": "https://app.example/emr"
+}
+```
+
+### `api_call`
+
+```json
+{
+  "eventType": "api_call",
+  "payload": {
+    "apiEndpoint": "/api/patients",
+    "method": "POST"
+  }
+}
+```
+
+### Custom (example)
+
+```json
+{
+  "eventType": "button_click",
+  "payload": { "button": "save_patient" }
+}
+```
 
 ---
 
 ## Event schema
-
-Each event sent to the gateway matches this shape:
 
 ```ts
 type TelemetryEvent = {
@@ -216,7 +315,7 @@ type TelemetryEvent = {
 };
 ```
 
-**Batch request body:**
+**HTTP POST body:**
 
 ```json
 {
@@ -224,55 +323,46 @@ type TelemetryEvent = {
 }
 ```
 
-**Auto-enrichment on `track()`:** `timestamp`, `sessionId`, `pathname` (from `window.location`), `tenantId`, `hospitalId`, plus config fields `ppkCode`, `apps`, `version`.
-
-**Route events** use `eventType: "route_view"` and include `pathname` + `referrer`.
-
-**API events** use `eventType: "api_call"` with payload `{ apiEndpoint, method }` (pathname only, no query string or body).
+**Auto-enrichment** on every event: `id`, `timestamp`, `sessionId`, `ppkCode`, `apps`, `version`, `tenantId`, `hospitalId`, and `userId` (when set).
 
 ---
 
 ## How it works
 
-```
-track() / trackRoute() / fetch (trackApi)
-        │
-        ▼
-  sanitizePayload()
-        │
-        ▼
-   QueueManager (memory)
-        │
-        ├─ flush on interval
-        ├─ flush on maxQueueSize
-        └─ flush on page hide (beacon)
-        │
-        ▼
-   BeaconTransport
-        ├─ navigator.sendBeacon (JSON)
-        └─ fetch + keepalive (+ optional gzip)
-        │
-        ├─ success → queue cleared
-        └─ failure → RetryManager (localStorage + backoff)
+```mermaid
+flowchart TD
+  A[track / trackRoute / fetch patch] --> B[sanitizePayload]
+  B --> C[QueueManager]
+  C --> D{flush trigger}
+  D -->|interval| E[BeaconTransport]
+  D -->|maxQueueSize| E
+  D -->|page hide| E
+  E -->|success| F[queue cleared]
+  E -->|failure| G[RetryManager + localStorage]
 ```
 
-- **SessionManager** — `sessionId` in `sessionStorage` (`nuha_telemetry_session_id`)
-- **RetryManager** — failed batches in `localStorage` (`nuha_telemetry_failed_batches`)
-- **RouteTracker** — ignores the same `pathname` fired again within `routeDebounceMs`
+| Component | Role |
+|-----------|------|
+| **SessionManager** | `sessionId` in `sessionStorage` (`nuha_telemetry_session_id`) |
+| **QueueManager** | In-memory batching and flush triggers |
+| **RetryManager** | `localStorage` key `nuha_telemetry_failed_batches` |
+| **RouteTracker** | Dedupes same `pathname` within `routeDebounceMs` |
+| **ApiTracker** | Patches `fetch`; dedupes method + path; skips ingest URL |
+| **BeaconTransport** | `sendBeacon` (JSON) → `fetch` + `keepalive` (+ gzip when supported) |
 
 ---
 
 ## Security
 
-The SDK **sanitizes** payloads before enqueue. Keys matching passwords, tokens, cookies, API keys, and common PHI field names are dropped. Values that look like JWTs or bearer tokens are redacted.
+Payloads are **sanitized** before enqueue. Blocked key patterns include passwords, tokens, cookies, API keys, and common PHI field names. JWT-like values are redacted.
 
-**Never send:**
+**Do not send:**
 
-- Passwords or secrets
-- Auth tokens or session cookies
-- Patient medical data or PHI in `payload`
+- Passwords, secrets, or auth tokens  
+- Cookies or session material  
+- Patient medical data or PHI in `payload`  
 
-Use opaque identifiers (e.g. internal user id) instead of clinical content.
+Use opaque ids (e.g. internal `userId`) instead of clinical content.
 
 ---
 
@@ -291,46 +381,54 @@ NEXT_PUBLIC_HOSPITAL_ID=hospital-1
 
 ## Development
 
-```bash
-cd packages/telemetry-sdk
+From the **repository root**:
 
+```bash
 npm install
-npm run build      # ESM + .d.ts → dist/
-npm run dev        # watch mode
-npm run typecheck  # tsc --noEmit
+npm run build       # builds packages/telemetry-sdk/dist
+npm run typecheck
+```
+
+From **`packages/telemetry-sdk`**:
+
+```bash
+npm run dev         # tsup watch
+npm run build
+npm run typecheck
 ```
 
 ### Project structure
 
 ```
-packages/telemetry-sdk/
-├── src/
-│   ├── core/           # TelemetrySDK, validation, browser helpers
-│   ├── queue/          # QueueManager, RetryManager
-│   ├── transport/      # BeaconTransport
-│   ├── trackers/       # RouteTracker
-│   ├── storage/        # SessionManager, sanitize
-│   └── types/
-├── dist/               # build output
-├── package.json
-├── tsconfig.json
-└── tsup.config.ts
-
-examples/nextjs-app-router/   # integration example
+telemetry-sdk/
+├── package.json                 # workspace root
+├── packages/telemetry-sdk/
+│   ├── src/
+│   │   ├── core/                # TelemetrySDK, validation
+│   │   ├── queue/               # QueueManager, RetryManager
+│   │   ├── transport/           # BeaconTransport
+│   │   ├── trackers/            # RouteTracker, ApiTracker
+│   │   ├── storage/             # SessionManager, sanitize
+│   │   └── types/
+│   └── dist/                    # published bundle
+└── examples/nextjs-app-router/
 ```
 
 ---
 
-## Principles
+## Releasing
 
-1. **Lightweight** — small bundle, no runtime deps  
-2. **Tree-shake friendly** — `sideEffects: false`  
-3. **Non-blocking** — never await sends during user interactions  
-4. **Browser-safe** — guards for SSR / missing APIs  
-5. **Healthcare-safe** — sanitization by default  
+After code changes, rebuild and commit `dist/` so GitHub installs stay up to date:
+
+```bash
+npm run build
+git add packages/telemetry-sdk/dist
+git commit -m "chore: rebuild dist"
+git push origin main
+```
 
 ---
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE) if present, or package metadata.
